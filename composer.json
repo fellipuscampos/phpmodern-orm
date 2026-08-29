@@ -1,0 +1,23 @@
+{
+    "name": "phpmodern/orm",
+    "description": "Minimal typed database access (PDO wrapper + query helper) — placeholder for the Prisma/Drizzle-equivalent core.",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": "^8.2",
+        "ext-pdo": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "PhpModern\\Orm\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "PhpModern\\Orm\\Tests\\": "tests/"
+        }
+    }
+}
