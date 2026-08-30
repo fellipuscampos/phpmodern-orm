@@ -14,6 +14,12 @@ use InvalidArgumentException;
  * findMany()/findManyWhereIn() exist specifically so Relations::hasMany()/
  * belongsTo() can eager-load in one extra query instead of one per row —
  * see Relations for the N+1 story.
+ *
+ * There is no dedicated "soft delete" method: a soft-deleted row is just a
+ * row where a `deleted_at` column is set (via update()) instead of removed,
+ * and callers exclude them the same way they filter on anything else — by
+ * passing ['deleted_at' => null] to findOneBy()/findMany(), which compiles
+ * to `deleted_at IS NULL` rather than the always-false `deleted_at = NULL`.
  */
 final class QueryHelper
 {
@@ -29,15 +35,11 @@ final class QueryHelper
     {
         self::assertValidIdentifier($table);
 
-        $where = [];
-        foreach (array_keys($conditions) as $column) {
-            self::assertValidIdentifier($column);
-            $where[] = "{$column} = :{$column}";
-        }
+        [$where, $params] = self::buildWhere($conditions);
 
         $sql = sprintf('SELECT * FROM %s WHERE %s LIMIT 1', $table, implode(' AND ', $where));
         $statement = $this->connection->pdo()->prepare($sql);
-        $statement->execute($conditions);
+        $statement->execute($params);
 
         $row = $statement->fetch();
 
@@ -59,15 +61,11 @@ final class QueryHelper
             return $statement->fetchAll();
         }
 
-        $where = [];
-        foreach (array_keys($conditions) as $column) {
-            self::assertValidIdentifier($column);
-            $where[] = "{$column} = :{$column}";
-        }
+        [$where, $params] = self::buildWhere($conditions);
 
         $sql = sprintf('SELECT * FROM %s WHERE %s', $table, implode(' AND ', $where));
         $statement = $this->connection->pdo()->prepare($sql);
-        $statement->execute($conditions);
+        $statement->execute($params);
 
         return $statement->fetchAll();
     }
@@ -98,6 +96,64 @@ final class QueryHelper
     }
 
     /**
+     * Fetches one page of $table, plus the total row count needed to know
+     * how many pages exist — always two queries, never a single query that
+     * silently gets slower as the table grows.
+     *
+     * @param array<string, int|string|bool|null> $conditions
+     * @return Paginator<array<string, mixed>>
+     */
+    public function paginate(
+        string $table,
+        int $page,
+        int $perPage,
+        array $conditions = [],
+        ?string $orderBy = null,
+        string $direction = 'ASC',
+    ): Paginator {
+        self::assertValidIdentifier($table);
+
+        $page = max(1, $page);
+        $perPage = max(1, $perPage);
+
+        if ($conditions === []) {
+            $whereSql = '';
+            $params = [];
+        } else {
+            [$where, $params] = self::buildWhere($conditions);
+            $whereSql = ' WHERE ' . implode(' AND ', $where);
+        }
+
+        $orderSql = '';
+        if ($orderBy !== null) {
+            self::assertValidIdentifier($orderBy);
+            $direction = strtoupper($direction);
+            if ($direction !== 'ASC' && $direction !== 'DESC') {
+                throw new InvalidArgumentException("Invalid sort direction: {$direction}");
+            }
+            $orderSql = " ORDER BY {$orderBy} {$direction}";
+        }
+
+        $countStatement = $this->connection->pdo()->prepare(
+            sprintf('SELECT COUNT(*) AS total FROM %s%s', $table, $whereSql),
+        );
+        $countStatement->execute($params);
+        $total = (int) $countStatement->fetch()['total'];
+
+        $itemsStatement = $this->connection->pdo()->prepare(
+            sprintf('SELECT * FROM %s%s%s LIMIT :limit OFFSET :offset', $table, $whereSql, $orderSql),
+        );
+        foreach ($params as $key => $value) {
+            $itemsStatement->bindValue($key, $value);
+        }
+        $itemsStatement->bindValue('limit', $perPage, \PDO::PARAM_INT);
+        $itemsStatement->bindValue('offset', ($page - 1) * $perPage, \PDO::PARAM_INT);
+        $itemsStatement->execute();
+
+        return new Paginator($itemsStatement->fetchAll(), $total, $page, $perPage);
+    }
+
+    /**
      * @param array<string, int|string|bool|null> $values
      * @param array<string, int|string|bool|null> $conditions
      */
@@ -113,18 +169,43 @@ final class QueryHelper
             $params["set_{$column}"] = $value;
         }
 
-        $where = [];
-        foreach ($conditions as $column => $value) {
-            self::assertValidIdentifier($column);
-            $where[] = "{$column} = :where_{$column}";
-            $params["where_{$column}"] = $value;
-        }
+        [$where, $whereParams] = self::buildWhere($conditions, 'where_');
+        $params = [...$params, ...$whereParams];
 
         $sql = sprintf('UPDATE %s SET %s WHERE %s', $table, implode(', ', $set), implode(' AND ', $where));
         $statement = $this->connection->pdo()->prepare($sql);
         $statement->execute($params);
 
         return $statement->rowCount();
+    }
+
+    /**
+     * Builds WHERE fragments and their bound params, treating a null value
+     * as `column IS NULL` — SQL's `column = NULL` is always unknown/false,
+     * so a plain equality would silently match nothing.
+     *
+     * @param array<string, int|string|bool|null> $conditions
+     * @return array{0: list<string>, 1: array<string, int|string|bool|null>}
+     */
+    private static function buildWhere(array $conditions, string $paramPrefix = ''): array
+    {
+        $where = [];
+        $params = [];
+        foreach ($conditions as $column => $value) {
+            self::assertValidIdentifier($column);
+
+            if ($value === null) {
+                $where[] = "{$column} IS NULL";
+
+                continue;
+            }
+
+            $paramName = "{$paramPrefix}{$column}";
+            $where[] = "{$column} = :{$paramName}";
+            $params[$paramName] = $value;
+        }
+
+        return [$where, $params];
     }
 
     private static function assertValidIdentifier(string $identifier): void

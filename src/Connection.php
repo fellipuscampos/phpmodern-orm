@@ -27,4 +27,29 @@ final class Connection
     {
         return $this->pdo;
     }
+
+    /**
+     * Runs $callback inside a transaction, committing on success and rolling
+     * back if it throws — so callers never have to remember the try/catch
+     * dance to avoid leaving a transaction half-open.
+     *
+     * @template T
+     * @param callable(): T $callback
+     * @return T
+     */
+    public function transaction(callable $callback): mixed
+    {
+        $this->pdo->beginTransaction();
+
+        try {
+            $result = $callback();
+            $this->pdo->commit();
+
+            return $result;
+        } catch (\Throwable $exception) {
+            $this->pdo->rollBack();
+
+            throw $exception;
+        }
+    }
 }

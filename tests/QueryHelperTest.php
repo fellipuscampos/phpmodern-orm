@@ -49,4 +49,71 @@ final class QueryHelperTest extends TestCase
     {
         self::assertSame([], $this->queryHelper->findManyWhereIn('widgets', 'id', []));
     }
+
+    public function test_null_condition_matches_is_null_not_equality(): void
+    {
+        $connection = Connection::sqlite(':memory:');
+        $connection->pdo()->exec('CREATE TABLE comments (id INTEGER PRIMARY KEY, deleted_at TEXT)');
+        $connection->pdo()->exec("INSERT INTO comments (id, deleted_at) VALUES (1, NULL), (2, '2026-01-01')");
+        $helper = new QueryHelper($connection);
+
+        $active = $helper->findMany('comments', ['deleted_at' => null]);
+        self::assertCount(1, $active);
+        self::assertSame(1, $active[0]['id']);
+
+        $one = $helper->findOneBy('comments', ['deleted_at' => null]);
+        self::assertNotNull($one);
+        self::assertSame(1, $one['id']);
+    }
+
+    public function test_update_can_filter_by_a_null_condition(): void
+    {
+        $connection = Connection::sqlite(':memory:');
+        $connection->pdo()->exec('CREATE TABLE comments (id INTEGER PRIMARY KEY, deleted_at TEXT)');
+        $connection->pdo()->exec("INSERT INTO comments (id, deleted_at) VALUES (1, NULL), (2, NULL)");
+        $helper = new QueryHelper($connection);
+
+        $affected = $helper->update('comments', ['deleted_at' => '2026-01-01'], ['id' => 1, 'deleted_at' => null]);
+
+        self::assertSame(1, $affected);
+        self::assertSame([], $helper->findMany('comments', ['id' => 2, 'deleted_at' => '2026-01-01']));
+    }
+
+    public function test_paginate_returns_a_slice_and_the_total_count(): void
+    {
+        $page1 = $this->queryHelper->paginate('widgets', 1, 2);
+
+        self::assertCount(2, $page1->items);
+        self::assertSame(3, $page1->total);
+        self::assertSame(1, $page1->page);
+        self::assertSame(2, $page1->lastPage());
+        self::assertTrue($page1->hasMorePages());
+
+        $page2 = $this->queryHelper->paginate('widgets', 2, 2);
+
+        self::assertCount(1, $page2->items);
+        self::assertFalse($page2->hasMorePages());
+    }
+
+    public function test_paginate_honours_conditions(): void
+    {
+        $page = $this->queryHelper->paginate('widgets', 1, 10, ['name' => 'gear']);
+
+        self::assertCount(1, $page->items);
+        self::assertSame(1, $page->total);
+    }
+
+    public function test_paginate_can_order_results(): void
+    {
+        $descending = $this->queryHelper->paginate('widgets', 1, 10, [], 'id', 'DESC');
+
+        self::assertSame([3, 2, 1], array_column($descending->items, 'id'));
+    }
+
+    public function test_paginate_rejects_an_invalid_sort_direction(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+
+        $this->queryHelper->paginate('widgets', 1, 10, [], 'id', 'sideways');
+    }
 }

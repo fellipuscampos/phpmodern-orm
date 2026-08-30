@@ -40,4 +40,41 @@ final class ConnectionTest extends TestCase
 
         $helper->findOneBy('orders; DROP TABLE orders', ['id' => 1]);
     }
+
+    public function test_transaction_commits_and_returns_the_callback_result(): void
+    {
+        $connection = Connection::sqlite(':memory:');
+        $connection->pdo()->exec('CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT NOT NULL)');
+
+        $result = $connection->transaction(function () use ($connection) {
+            $connection->pdo()->exec("INSERT INTO orders (id, status) VALUES (1, 'pending')");
+
+            return 'done';
+        });
+
+        self::assertSame('done', $result);
+
+        $helper = new QueryHelper($connection);
+        self::assertNotNull($helper->findOneBy('orders', ['id' => 1]));
+    }
+
+    public function test_transaction_rolls_back_on_exception(): void
+    {
+        $connection = Connection::sqlite(':memory:');
+        $connection->pdo()->exec('CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT NOT NULL)');
+
+        try {
+            $connection->transaction(function () use ($connection): void {
+                $connection->pdo()->exec("INSERT INTO orders (id, status) VALUES (1, 'pending')");
+
+                throw new \RuntimeException('boom');
+            });
+            self::fail('Expected exception was not thrown.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('boom', $exception->getMessage());
+        }
+
+        $helper = new QueryHelper($connection);
+        self::assertNull($helper->findOneBy('orders', ['id' => 1]));
+    }
 }
