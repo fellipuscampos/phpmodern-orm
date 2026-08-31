@@ -91,4 +91,39 @@ final class RelationsTest extends TestCase
             'hasMany() must issue exactly one query regardless of parent row count',
         );
     }
+
+    public function test_belongs_to_many_attaches_related_rows_through_a_pivot_table(): void
+    {
+        $pdo = $this->connection->pdo();
+        $pdo->exec('CREATE TABLE tags (id INTEGER PRIMARY KEY, label TEXT NOT NULL)');
+        $pdo->exec('CREATE TABLE book_tag (book_id INTEGER NOT NULL, tag_id INTEGER NOT NULL)');
+        $pdo->exec("INSERT INTO tags (id, label) VALUES (1, 'history'), (2, 'ai'), (3, 'math')");
+        $insertPivot = $pdo->prepare('INSERT INTO book_tag (book_id, tag_id) VALUES (
+            (SELECT id FROM books WHERE title = :title), :tag_id)');
+        $insertPivot->execute(['title' => 'Notes on the Analytical Engine', 'tag_id' => 2]);
+        $insertPivot->execute(['title' => 'Notes on the Analytical Engine', 'tag_id' => 3]);
+        $insertPivot->execute(['title' => 'Computing Machinery and Intelligence', 'tag_id' => 2]);
+
+        $books = $this->queryHelper->findMany('books');
+        $books = Relations::belongsToMany(
+            $this->queryHelper,
+            $books,
+            'id',
+            'book_tag',
+            'book_id',
+            'tag_id',
+            'tags',
+            'id',
+            'tags',
+        );
+
+        $labelsByTitle = [];
+        foreach ($books as $book) {
+            $labelsByTitle[$book['title']] = array_column($book['tags'], 'label');
+        }
+
+        self::assertSame(['ai', 'math'], $labelsByTitle['Notes on the Analytical Engine']);
+        self::assertSame(['ai'], $labelsByTitle['Computing Machinery and Intelligence']);
+        self::assertSame([], $labelsByTitle['A COBOL Report']);
+    }
 }

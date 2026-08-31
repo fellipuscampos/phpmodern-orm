@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace PhpModern\Orm;
 
+use PhpModern\Events\Dispatcher;
+use PhpModern\Orm\Events\ModelDeleted;
+use PhpModern\Orm\Events\ModelSaved;
 use RuntimeException;
 
 /**
@@ -26,6 +29,8 @@ abstract class Model
 {
     private static ?QueryHelper $queryHelper = null;
 
+    private static ?Dispatcher $dispatcher = null;
+
     /**
      * Called once (e.g. in bootstrap) before any model queries — a single
      * shared QueryHelper for every Model subclass, the same "configure
@@ -34,6 +39,16 @@ abstract class Model
     public static function useQueryHelper(QueryHelper $queryHelper): void
     {
         self::$queryHelper = $queryHelper;
+    }
+
+    /**
+     * Optional: wires a shared Dispatcher so save()/delete() emit
+     * ModelSaved/ModelDeleted. Uncalled, models behave exactly as before —
+     * eventing is opt-in, not a requirement to use the ORM at all.
+     */
+    public static function useDispatcher(?Dispatcher $dispatcher): void
+    {
+        self::$dispatcher = $dispatcher;
     }
 
     abstract public static function table(): string;
@@ -96,6 +111,7 @@ abstract class Model
     {
         $helper = self::queryHelper();
         $id = $this->id();
+        $wasCreated = $id === null;
 
         if ($id === null) {
             $id = $helper->insert(static::table(), $this->attributes(), timestamps: static::timestamps());
@@ -109,6 +125,8 @@ abstract class Model
             throw new RuntimeException(sprintf('%s::save() could not re-fetch row %d it just wrote.', static::class, $id));
         }
 
+        self::$dispatcher?->dispatch(new ModelSaved(static::class, $id, $wasCreated));
+
         return static::fromRow($row);
     }
 
@@ -121,6 +139,8 @@ abstract class Model
         }
 
         self::queryHelper()->delete(static::table(), ['id' => $id]);
+
+        self::$dispatcher?->dispatch(new ModelDeleted(static::class, $id));
     }
 
     private static function queryHelper(): QueryHelper

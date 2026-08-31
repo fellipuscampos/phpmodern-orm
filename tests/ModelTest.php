@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace PhpModern\Orm\Tests;
 
+use PhpModern\Events\Dispatcher;
 use PhpModern\Orm\Comparison;
 use PhpModern\Orm\Connection;
+use PhpModern\Orm\Events\ModelDeleted;
+use PhpModern\Orm\Events\ModelSaved;
 use PhpModern\Orm\QueryHelper;
 use PhpModern\Orm\Tests\Fixtures\Post;
 use PhpModern\Orm\Tests\Fixtures\Widget;
@@ -21,6 +24,14 @@ final class ModelTest extends TestCase
         $connection->pdo()->exec("INSERT INTO widgets (id, name, quantity) VALUES (1, 'gear', 3), (2, 'bolt', 10)");
 
         Widget::useQueryHelper(new QueryHelper($connection));
+    }
+
+    protected function tearDown(): void
+    {
+        // useDispatcher() is shared static state across every Model
+        // subclass — reset it so a dispatcher wired in one test never
+        // leaks into the next.
+        Widget::useDispatcher(null);
     }
 
     public function test_find_returns_null_for_a_missing_id(): void
@@ -107,5 +118,62 @@ final class ModelTest extends TestCase
 
         self::assertNotNull($created->createdAt);
         self::assertSame($created->createdAt, $created->updatedAt);
+    }
+
+    public function test_save_without_a_dispatcher_configured_does_not_error(): void
+    {
+        $created = (new Widget(null, 'sprocket', 7))->save();
+
+        self::assertNotNull($created->id);
+    }
+
+    public function test_save_on_a_new_model_dispatches_model_saved_with_was_created_true(): void
+    {
+        $dispatcher = new Dispatcher();
+        $events = [];
+        $dispatcher->listen(ModelSaved::class, static function (ModelSaved $event) use (&$events): void {
+            $events[] = $event;
+        });
+        Widget::useDispatcher($dispatcher);
+
+        $created = (new Widget(null, 'sprocket', 7))->save();
+
+        self::assertCount(1, $events);
+        self::assertSame(Widget::class, $events[0]->model);
+        self::assertSame($created->id, $events[0]->id);
+        self::assertTrue($events[0]->wasCreated);
+    }
+
+    public function test_save_on_an_existing_model_dispatches_model_saved_with_was_created_false(): void
+    {
+        $dispatcher = new Dispatcher();
+        $events = [];
+        $dispatcher->listen(ModelSaved::class, static function (ModelSaved $event) use (&$events): void {
+            $events[] = $event;
+        });
+        Widget::useDispatcher($dispatcher);
+
+        (new Widget(1, 'gear', 42))->save();
+
+        self::assertCount(1, $events);
+        self::assertFalse($events[0]->wasCreated);
+    }
+
+    public function test_delete_dispatches_model_deleted(): void
+    {
+        $dispatcher = new Dispatcher();
+        $events = [];
+        $dispatcher->listen(ModelDeleted::class, static function (ModelDeleted $event) use (&$events): void {
+            $events[] = $event;
+        });
+        Widget::useDispatcher($dispatcher);
+
+        $widget = Widget::find(1);
+        self::assertNotNull($widget);
+        $widget->delete();
+
+        self::assertCount(1, $events);
+        self::assertSame(Widget::class, $events[0]->model);
+        self::assertSame(1, $events[0]->id);
     }
 }
