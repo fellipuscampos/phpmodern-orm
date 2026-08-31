@@ -213,6 +213,23 @@ final class QueryHelper
     }
 
     /**
+     * @param array<string, int|string|bool|null|Comparison> $conditions
+     * @return int rows deleted
+     */
+    public function delete(string $table, array $conditions): int
+    {
+        self::assertValidIdentifier($table);
+
+        [$where, $params] = self::buildWhere($conditions);
+
+        $sql = sprintf('DELETE FROM %s WHERE %s', $table, implode(' AND ', $where));
+        $statement = $this->connection->pdo()->prepare($sql);
+        $statement->execute($params);
+
+        return $statement->rowCount();
+    }
+
+    /**
      * Builds WHERE fragments and their bound params, treating a null value
      * as `column IS NULL` — SQL's `column = NULL` is always unknown/false,
      * so a plain equality would silently match nothing — and a Comparison

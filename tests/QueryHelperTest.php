@@ -206,4 +206,26 @@ final class QueryHelperTest extends TestCase
         self::assertSame(2, $affected);
         self::assertSame([0, 0, 25], array_column($helper->findMany('stock', [], 'id'), 'quantity'));
     }
+
+    public function test_delete_removes_matching_rows_and_returns_the_count(): void
+    {
+        $affected = $this->queryHelper->delete('widgets', ['name' => 'gear']);
+
+        self::assertSame(1, $affected);
+        self::assertNull($this->queryHelper->findOneBy('widgets', ['name' => 'gear']));
+        self::assertCount(2, $this->queryHelper->findMany('widgets'));
+    }
+
+    public function test_delete_with_a_comparison_condition(): void
+    {
+        $connection = Connection::sqlite(':memory:');
+        $connection->pdo()->exec('CREATE TABLE stock (id INTEGER PRIMARY KEY, quantity INTEGER NOT NULL)');
+        $connection->pdo()->exec('INSERT INTO stock (quantity) VALUES (3), (10), (25)');
+        $helper = new QueryHelper($connection);
+
+        $affected = $helper->delete('stock', ['quantity' => Comparison::greaterThan(5)]);
+
+        self::assertSame(2, $affected);
+        self::assertSame([3], array_column($helper->findMany('stock'), 'quantity'));
+    }
 }
