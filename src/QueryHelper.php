@@ -58,7 +58,7 @@ final class QueryHelper
             $statement = $this->connection->pdo()->prepare(sprintf('SELECT * FROM %s', $table));
             $statement->execute();
 
-            return $statement->fetchAll();
+            return array_values($statement->fetchAll());
         }
 
         [$where, $params] = self::buildWhere($conditions);
@@ -67,7 +67,7 @@ final class QueryHelper
         $statement = $this->connection->pdo()->prepare($sql);
         $statement->execute($params);
 
-        return $statement->fetchAll();
+        return array_values($statement->fetchAll());
     }
 
     /**
@@ -90,9 +90,9 @@ final class QueryHelper
         $placeholders = implode(', ', array_fill(0, count($values), '?'));
         $sql = sprintf('SELECT * FROM %s WHERE %s IN (%s)', $table, $column, $placeholders);
         $statement = $this->connection->pdo()->prepare($sql);
-        $statement->execute(array_values($values));
+        $statement->execute($values);
 
-        return $statement->fetchAll();
+        return array_values($statement->fetchAll());
     }
 
     /**
@@ -150,7 +150,7 @@ final class QueryHelper
         $itemsStatement->bindValue('offset', ($page - 1) * $perPage, \PDO::PARAM_INT);
         $itemsStatement->execute();
 
-        return new Paginator($itemsStatement->fetchAll(), $total, $page, $perPage);
+        return new Paginator(array_values($itemsStatement->fetchAll()), $total, $page, $perPage);
     }
 
     /**
