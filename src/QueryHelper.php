@@ -20,6 +20,10 @@ use InvalidArgumentException;
  * and callers exclude them the same way they filter on anything else — by
  * passing ['deleted_at' => null] to findOneBy()/findMany(), which compiles
  * to `deleted_at IS NULL` rather than the always-false `deleted_at = NULL`.
+ *
+ * A condition value can also be a Comparison (e.g. Comparison::greaterThan(5))
+ * for anything richer than equality — a typed alternative to a magic-string
+ * DSL, the same idea as phpmodern/validation's Rule objects.
  */
 final class QueryHelper
 {
@@ -28,7 +32,7 @@ final class QueryHelper
     }
 
     /**
-     * @param array<string, int|string|bool|null> $conditions
+     * @param array<string, int|string|bool|null|Comparison> $conditions
      * @return array<string, mixed>|null
      */
     public function findOneBy(string $table, array $conditions): ?array
@@ -47,15 +51,17 @@ final class QueryHelper
     }
 
     /**
-     * @param array<string, int|string|bool|null> $conditions
+     * @param array<string, int|string|bool|null|Comparison> $conditions
      * @return list<array<string, mixed>>
      */
-    public function findMany(string $table, array $conditions = []): array
+    public function findMany(string $table, array $conditions = [], ?string $orderBy = null, string $direction = 'ASC'): array
     {
         self::assertValidIdentifier($table);
 
+        $orderSql = self::buildOrderBy($orderBy, $direction);
+
         if ($conditions === []) {
-            $statement = $this->connection->pdo()->prepare(sprintf('SELECT * FROM %s', $table));
+            $statement = $this->connection->pdo()->prepare(sprintf('SELECT * FROM %s%s', $table, $orderSql));
             $statement->execute();
 
             return array_values($statement->fetchAll());
@@ -63,7 +69,7 @@ final class QueryHelper
 
         [$where, $params] = self::buildWhere($conditions);
 
-        $sql = sprintf('SELECT * FROM %s WHERE %s', $table, implode(' AND ', $where));
+        $sql = sprintf('SELECT * FROM %s WHERE %s%s', $table, implode(' AND ', $where), $orderSql);
         $statement = $this->connection->pdo()->prepare($sql);
         $statement->execute($params);
 
@@ -100,7 +106,7 @@ final class QueryHelper
      * how many pages exist — always two queries, never a single query that
      * silently gets slower as the table grows.
      *
-     * @param array<string, int|string|bool|null> $conditions
+     * @param array<string, int|string|bool|null|Comparison> $conditions
      * @return Paginator<array<string, mixed>>
      */
     public function paginate(
@@ -124,15 +130,7 @@ final class QueryHelper
             $whereSql = ' WHERE ' . implode(' AND ', $where);
         }
 
-        $orderSql = '';
-        if ($orderBy !== null) {
-            self::assertValidIdentifier($orderBy);
-            $direction = strtoupper($direction);
-            if ($direction !== 'ASC' && $direction !== 'DESC') {
-                throw new InvalidArgumentException("Invalid sort direction: {$direction}");
-            }
-            $orderSql = " ORDER BY {$orderBy} {$direction}";
-        }
+        $orderSql = self::buildOrderBy($orderBy, $direction);
 
         $countStatement = $this->connection->pdo()->prepare(
             sprintf('SELECT COUNT(*) AS total FROM %s%s', $table, $whereSql),
@@ -155,11 +153,46 @@ final class QueryHelper
 
     /**
      * @param array<string, int|string|bool|null> $values
-     * @param array<string, int|string|bool|null> $conditions
+     * @return int the inserted row's auto-increment id (0 if the table has none)
      */
-    public function update(string $table, array $values, array $conditions): int
+    public function insert(string $table, array $values, bool $timestamps = false): int
     {
         self::assertValidIdentifier($table);
+
+        if ($timestamps) {
+            $now = date('Y-m-d H:i:s');
+            $values['created_at'] ??= $now;
+            $values['updated_at'] ??= $now;
+        }
+
+        $columns = [];
+        $placeholders = [];
+        $params = [];
+        foreach ($values as $column => $value) {
+            self::assertValidIdentifier($column);
+            $columns[] = $column;
+            $placeholders[] = ":{$column}";
+            $params[$column] = $value;
+        }
+
+        $sql = sprintf('INSERT INTO %s (%s) VALUES (%s)', $table, implode(', ', $columns), implode(', ', $placeholders));
+        $statement = $this->connection->pdo()->prepare($sql);
+        $statement->execute($params);
+
+        return (int) $this->connection->pdo()->lastInsertId();
+    }
+
+    /**
+     * @param array<string, int|string|bool|null> $values
+     * @param array<string, int|string|bool|null|Comparison> $conditions
+     */
+    public function update(string $table, array $values, array $conditions, bool $timestamps = false): int
+    {
+        self::assertValidIdentifier($table);
+
+        if ($timestamps) {
+            $values['updated_at'] = date('Y-m-d H:i:s');
+        }
 
         $set = [];
         $params = [];
@@ -182,10 +215,11 @@ final class QueryHelper
     /**
      * Builds WHERE fragments and their bound params, treating a null value
      * as `column IS NULL` — SQL's `column = NULL` is always unknown/false,
-     * so a plain equality would silently match nothing.
+     * so a plain equality would silently match nothing — and a Comparison
+     * value as its own operator instead of equality.
      *
-     * @param array<string, int|string|bool|null> $conditions
-     * @return array{0: list<string>, 1: array<string, int|string|bool|null>}
+     * @param array<string, int|string|bool|null|Comparison> $conditions
+     * @return array{0: list<string>, 1: array<string, int|string|bool>}
      */
     private static function buildWhere(array $conditions, string $paramPrefix = ''): array
     {
@@ -201,11 +235,35 @@ final class QueryHelper
             }
 
             $paramName = "{$paramPrefix}{$column}";
+
+            if ($value instanceof Comparison) {
+                $where[] = "{$column} {$value->operator} :{$paramName}";
+                $params[$paramName] = $value->value;
+
+                continue;
+            }
+
             $where[] = "{$column} = :{$paramName}";
             $params[$paramName] = $value;
         }
 
         return [$where, $params];
+    }
+
+    private static function buildOrderBy(?string $orderBy, string $direction): string
+    {
+        if ($orderBy === null) {
+            return '';
+        }
+
+        self::assertValidIdentifier($orderBy);
+        $direction = strtoupper($direction);
+
+        if ($direction !== 'ASC' && $direction !== 'DESC') {
+            throw new InvalidArgumentException("Invalid sort direction: {$direction}");
+        }
+
+        return " ORDER BY {$orderBy} {$direction}";
     }
 
     private static function assertValidIdentifier(string $identifier): void
